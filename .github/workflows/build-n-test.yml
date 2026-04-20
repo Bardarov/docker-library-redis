@@ -110,7 +110,14 @@ jobs:
           redisbloom_version: ${{ inputs.redisbloom_version }}
           redistimeseries_version: ${{ inputs.redistimeseries_version }}
           run_type: ${{ inputs.run_type }}
-          modules_enabled: ${{ inputs.modules_enabled }}
+          custom_build: ${{ inputs.modules_enabled }}
+
+      - name: Run module and entrypoint tests
+        if: ${{ inputs.modules_enabled }}
+        uses: ./.github/actions/test-modules-and-entrypoint
+        with:
+          display_name: ${{ matrix.platform == 'linux/amd64' && 'amd64' || matrix.platform == 'linux/arm64' && 'arm64' || matrix.platform == 'linux/i386' && 'i386' || matrix.platform == 'linux/arm/v5' && 'arm-v5' || matrix.platform == 'linux/arm/v6' && 'arm-v6' || matrix.platform == 'linux/arm/v7' && 'arm-v7' || matrix.platform == 'linux/ppc64le' && 'ppc64le' || matrix.platform == 'linux/riscv64' && 'riscv64' || matrix.platform == 'linux/s390x' && 's390x' || '' }}
+          redis_image: ${{ github.sha }}:${{ matrix.platform == 'linux/amd64' && 'amd64' || matrix.platform == 'linux/arm64' && 'arm64' || matrix.platform == 'linux/i386' && 'i386' || matrix.platform == 'linux/arm/v5' && 'arm-v5' || matrix.platform == 'linux/arm/v6' && 'arm-v6' || matrix.platform == 'linux/arm/v7' && 'arm-v7' || matrix.platform == 'linux/ppc64le' && 'ppc64le' || matrix.platform == 'linux/riscv64' && 'riscv64' || matrix.platform == 'linux/s390x' && 's390x' || '' }}
 
   create-multi-arch-image:
     runs-on: ubuntu-latest

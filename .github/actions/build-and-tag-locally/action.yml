@@ -38,11 +38,10 @@ inputs:
   run_type:
     description: 'Run type, either release, pr, nightly, unstable or custom'
     required: true
-  modules_enabled:
-    description: 'Whether module-specific rendering and tests should run'
+  custom_build:
+    description: 'Whether to render and build using the custom/module-oriented path'
     required: false
-    default: "true"
-
+    default: "false"
 runs:
   using: "composite"
   steps:
@@ -135,7 +134,7 @@ runs:
 
     - name: Render Dockerfiles for custom or unstable build
       shell: bash
-      if: inputs.run_type != 'release' && inputs.run_type != 'pr' && inputs.modules_enabled == 'true'
+      if: inputs.run_type != 'release' && inputs.run_type != 'pr' && inputs.custom_build == 'true'
       run: |
         ./bin/render-all-dockerfiles.sh -s custom_build true -s redis_download_url $REDIS_DOWNLOAD_URL
 
@@ -240,101 +239,6 @@ runs:
           exit 1
         fi
         docker exec "$CONTAINER_NAME" redis-cli info server
-
-    - name: Verify installed modules
-      if: ${{ inputs.modules_enabled == 'true' && contains(fromJSON('["amd64", "arm64"]'), steps.platform.outputs.display_name) }}
-      shell: bash
-      run: |
-        modules=$(docker exec sanity-test-${{ steps.platform.outputs.display_name }} redis-cli module list)
-        echo "Installed modules:"
-        echo "$modules"
-        missing_modules=()
-        for module in "bf" "search" "timeseries" "ReJSON"; do
-          if ! echo "$modules" | grep -q "$module"; then
-            missing_modules+=("$module")
-          fi
-        done
-        if [ ${#missing_modules[@]} -eq 0 ]; then
-          echo "All required modules are installed"
-        else
-          echo "The following modules are missing: ${missing_modules[*]}"
-          exit 1
-        fi
-
-    - name: Test RedisBloom
-      if: ${{ inputs.modules_enabled == 'true' && contains(fromJSON('["amd64", "arm64"]'), steps.platform.outputs.display_name) }}
-      shell: bash
-      run: |
-        docker exec sanity-test-${{ steps.platform.outputs.display_name }} redis-cli BF.ADD popular_keys "redis:hash"
-        docker exec sanity-test-${{ steps.platform.outputs.display_name }} redis-cli BF.ADD popular_keys "redis:set"
-        [ "$(docker exec sanity-test-${{ steps.platform.outputs.display_name }} redis-cli BF.EXISTS popular_keys "redis:hash")" = "1" ] || { echo "RedisBloom test failed: 'redis:hash' not found"; exit 1; }
-        [ "$(docker exec sanity-test-${{ steps.platform.outputs.display_name }} redis-cli BF.EXISTS popular_keys "redis:list")" = "0" ] || { echo "RedisBloom test failed: 'redis:list' found unexpectedly"; exit 1; }
-        echo "RedisBloom test passed successfully"
-
-    - name: Test RediSearch
-      if: ${{ inputs.modules_enabled == 'true' && contains(fromJSON('["amd64", "arm64"]'), steps.platform.outputs.display_name) }}
-      shell: bash
-      run: |
-        docker exec sanity-test-${{ steps.platform.outputs.display_name }} redis-cli FT.CREATE redis_commands ON HASH PREFIX 1 cmd: SCHEMA name TEXT SORTABLE description TEXT
-        docker exec sanity-test-${{ steps.platform.outputs.display_name }} redis-cli HSET cmd:set name "SET" description "Set the string value of a key"
-        docker exec sanity-test-${{ steps.platform.outputs.display_name }} redis-cli HSET cmd:get name "GET" description "Get the value of a key"
-        result=$(docker exec sanity-test-${{ steps.platform.outputs.display_name }} redis-cli FT.SEARCH redis_commands "value")
-        if echo "$result" | grep -q "Set the string value of a key" && echo "$result" | grep -q "Get the value of a key"; then
-          echo "RediSearch test passed successfully"
-        else
-          echo "RediSearch test failed: expected commands not found in search results"
-          exit 1
-        fi
-
-    - name: Test RedisTimeSeries
-      if: ${{ inputs.modules_enabled == 'true' && contains(fromJSON('["amd64", "arm64"]'), steps.platform.outputs.display_name) }}
-      shell: bash
-      run: |
-        docker exec sanity-test-${{ steps.platform.outputs.display_name }} redis-cli TS.CREATE redis:cpu:usage RETENTION 86400
-        docker exec sanity-test-${{ steps.platform.outputs.display_name }} redis-cli TS.ADD redis:cpu:usage "*" 80
-        docker exec sanity-test-${{ steps.platform.outputs.display_name }} redis-cli TS.ADD redis:cpu:usage "*" 65
-        docker exec sanity-test-${{ steps.platform.outputs.display_name }} redis-cli TS.ADD redis:cpu:usage "*" 70
-        result=$(docker exec sanity-test-${{ steps.platform.outputs.display_name }} redis-cli TS.RANGE redis:cpu:usage - + COUNT 3)
-        if echo "$result" | grep -q "80" && echo "$result" | grep -q "65" && echo "$result" | grep -q "70"; then
-          echo "RedisTimeSeries test passed successfully"
-        else
-          echo "RedisTimeSeries test failed: expected values not found in time series"
-          exit 1
-        fi
-
-    - name: Test ReJSON
-      if: ${{ inputs.modules_enabled == 'true' && contains(fromJSON('["amd64", "arm64"]'), steps.platform.outputs.display_name) }}
-      shell: bash
-      run: |
-        docker exec sanity-test-${{ steps.platform.outputs.display_name }} redis-cli JSON.SET redis:config $ '{"maxmemory":"2gb","maxmemory-policy":"allkeys-lru"}'
-        result=$(docker exec sanity-test-${{ steps.platform.outputs.display_name }} redis-cli JSON.GET redis:config $.maxmemory-policy)
-        cleaned_result=$(echo $result | tr -d '[]"')
-        if [ "$cleaned_result" = "allkeys-lru" ]; then
-          echo "ReJSON test passed successfully"
-        else
-          echo "ReJSON test failed: expected 'allkeys-lru', got $result"
-          exit 1
-        fi
-
-    - name: Test the entrypoint
-      id: test_entrypoint
-      if: ${{ inputs.modules_enabled == 'true' && contains(fromJSON('["amd64", "i386", "arm64"]'), steps.platform.outputs.display_name) }}
-      shell: bash
-      run: >
-        cd test && env
-        PLATFORM=${{ steps.platform.outputs.display_name }}
-        REDIS_IMG=${{ github.sha }}:${{ steps.platform.outputs.display_name }}
-        ./run-entrypoint-tests.sh
-        -- --output-junit-xml=report-entrypoint.xml
-
-    - name: Test Report
-      uses: dorny/test-reporter@v2
-      # run this step even if previous step failed, but not if it was skipped
-      if: ${{ !cancelled() && steps.test_entrypoint.conclusion != 'skipped' }}
-      with:
-        name: Entrypoint Tests
-        path: test/report-entrypoint.xml
-        reporter: java-junit
 
     - name: Format registry tag
       id: format-registry-tag
